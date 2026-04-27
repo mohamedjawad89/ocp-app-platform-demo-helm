@@ -28,6 +28,8 @@ gitlab:
         name: Dave Developer
       - id: dev2
         name: Divya Developer
+      - id: dev3
+        name: Do Developer
       - id: pe1
         name: Paul PlatEngineer
       - id: pe2
@@ -65,6 +67,7 @@ gitlab:
       users:
         - id: dev1
         - id: dev2
+        - id: dev3
     - name: parasol
       repo:
         - name: parasol-insurance
@@ -76,6 +79,7 @@ gitlab:
       users:
         - id: dev1
         - id: dev2
+        - id: dev3
         - id: pe1
         - id: pe2
   templates:
