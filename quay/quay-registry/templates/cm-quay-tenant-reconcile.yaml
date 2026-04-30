@@ -1,0 +1,136 @@
+kind: ConfigMap
+metadata:
+  name: {{ include "quay-registry.name" . }}-tenant-reconcile
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+apiVersion: v1
+data:
+  playbook.yaml: |
+    ---
+    - name: Reconcile per-tenant Quay assets
+      hosts: localhost
+      vars:
+        vault_namespace: {{ $.Values.vault.namespace }}
+        vault_name: {{ $.Values.vault.name }}
+        tenants: {{ $.Values.tenants | default list | toJson }}
+      tasks:
+        - name: Wait for QuayRegistry status
+          kubernetes.core.k8s_info:
+            api_version: quay.redhat.com/v1
+            kind: QuayRegistry
+            name: {{ include "quay-registry.name" . }}
+            namespace: {{ .Release.Namespace }}
+          register: r_quay_registry
+          retries: 60
+          delay: 10
+          until:
+            - r_quay_registry.resources[0].status.currentVersion is defined
+            - r_quay_registry.resources[0].status.currentVersion | length > 0
+
+        - name: Wait for Quay admin-token Secret (created by one-shot config Job)
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: {{ include "quay-registry.name" . }}-admin-token
+            namespace: {{ .Release.Namespace }}
+          register: r_quay_admin_token
+          retries: 60
+          delay: 10
+          until:
+            - r_quay_admin_token.resources is defined
+            - r_quay_admin_token.resources | length > 0
+            - r_quay_admin_token.resources[0].data is defined
+            - r_quay_admin_token.resources[0].data.token is defined
+
+        - name: Decode Quay admin token
+          ansible.builtin.set_fact:
+            quay_admin_token: '{{ "{{" }} r_quay_admin_token.resources[0].data.token | b64decode {{ "}}" }}'
+
+        - name: Skip if no tenants configured
+          ansible.builtin.debug:
+            msg: 'No tenants in tenants[]; nothing to reconcile.'
+          when: tenants | length == 0
+
+{{- range $tenant := .Values.tenants }}
+
+        - name: Ensure Quay tenant organization tenant-{{ $tenant }} — idempotent
+          ansible.builtin.uri:
+            url: '{{ "{{" }} r_quay_registry.resources[0].status.registryEndpoint {{ "}}" }}/api/v1/organization/'
+            method: POST
+            headers:
+              Authorization: 'Bearer {{ "{{" }} quay_admin_token {{ "}}" }}'
+            body:
+              name: tenant-{{ $tenant }}
+              email: tenant-{{ $tenant }}@rhdemo.com
+            body_format: json
+            validate_certs: false
+            status_code:
+              - 201
+              - 400
+              - 409
+          register: r_tenant_org_{{ $tenant }}
+
+        - name: Ensure robot account tenant-{{ $tenant }}+pipeline — idempotent (PUT)
+          ansible.builtin.uri:
+            url: '{{ "{{" }} r_quay_registry.resources[0].status.registryEndpoint {{ "}}" }}/api/v1/organization/tenant-{{ $tenant }}/robots/pipeline'
+            method: PUT
+            headers:
+              Authorization: 'Bearer {{ "{{" }} quay_admin_token {{ "}}" }}'
+            body:
+              description: 'Pipeline robot for tenant {{ $tenant }}'
+            body_format: json
+            validate_certs: false
+            status_code:
+              - 201
+              - 400
+
+        - name: Look up robot account tenant-{{ $tenant }}+pipeline
+          ansible.builtin.uri:
+            url: '{{ "{{" }} r_quay_registry.resources[0].status.registryEndpoint {{ "}}" }}/api/v1/organization/tenant-{{ $tenant }}/robots/pipeline'
+            method: GET
+            headers:
+              Authorization: 'Bearer {{ "{{" }} quay_admin_token {{ "}}" }}'
+            validate_certs: false
+            status_code: 200
+          register: r_tenant_robot_{{ $tenant }}
+
+        - name: Build tenant-{{ $tenant }} Quay docker-config blob
+          ansible.builtin.set_fact:
+            _tenant_{{ $tenant }}_quay_dockercfg: >-
+              {{ "{{" }}
+                {
+                  "auths": {
+                    (r_quay_registry.resources[0].status.registryEndpoint | urlsplit('hostname')): {
+                      "auth": ((r_tenant_robot_{{ $tenant }}.json.name + ":" + r_tenant_robot_{{ $tenant }}.json.token) | b64encode),
+                      "email": ("tenant-" + ('{{ $tenant }}') + "@rhdemo.com")
+                    }
+                  }
+                } | to_json
+              {{ "}}" }}
+{{- end }}
+
+        - name: Wait for Vault pod
+          kubernetes.core.k8s_info:
+            kind: Pod
+            name: {{ $.Values.vault.name }}-0
+            namespace: {{ $.Values.vault.namespace }}
+          register: r_vault
+          retries: 60
+          delay: 5
+          until:
+            - r_vault.resources is defined
+            - r_vault.resources | length > 0
+            - r_vault.resources[0].status.phase == 'Running'
+
+        - name: Write per-tenant Quay credentials to Vault (idempotent overwrite)
+          kubernetes.core.k8s_exec:
+            namespace: {{ $.Values.vault.namespace }}
+            pod: {{ $.Values.vault.name }}-0
+            command: '{{ "{{" }} item {{ "}}" }}'
+          loop:
+{{- range $tenant := .Values.tenants }}
+            - 'vault kv put kv/secrets/tenants/{{ $tenant }}/quay/username value={{ "{{" }} r_tenant_robot_{{ $tenant }}.json.name {{ "}}" }}'
+            - 'vault kv put kv/secrets/tenants/{{ $tenant }}/quay/password value={{ "{{" }} r_tenant_robot_{{ $tenant }}.json.token {{ "}}" }}'
+            - 'vault kv put kv/secrets/tenants/{{ $tenant }}/quay/auth value={{ "{{" }} _tenant_{{ $tenant }}_quay_dockercfg {{ "}}" }}'
+{{- end }}
+          when: tenants | length > 0

@@ -3,9 +3,16 @@ tenant:
 
 gitlab:
   host: ""
+  # GitLab group housing the tenant's repo. Default empty — populated by app-of-apps;
+  # canonical value is "tenant-<username>" (rendered by the tenant.gitlabGroup helper
+  # if left empty in chart values).
+  group: ""
 
 registry:
   host: ""
+  # Quay organization owning the tenant's images. Default empty — populated by
+  # app-of-apps; canonical value is "tenant-<username>".
+  org: ""
 
 cluster:
   subdomain: ""
@@ -13,13 +20,29 @@ cluster:
 argocd:
   namespace: rhdh-gitops
 
+gitops:
+  # Repository hosting this Helm chart set; passed through from app-of-apps so the
+  # tenant AppProject's sourceRepos can permit it (Argo CD pulls the chart from here).
+  repoURL: ""
+
 vault:
   name: vault
   namespace: vault
+  # Per-tenant Vault Kubernetes-auth role; default empty — populated by app-of-apps;
+  # canonical value is "tenant-<username>".
+  tenantRole: ""
+  # Per-tenant Vault KV path prefix; default empty — populated by app-of-apps;
+  # canonical value is "kv/secrets/tenants/<username>".
+  tenantPathPrefix: ""
 
 database:
   image: registry.redhat.io/rhel8/postgresql-12:1
   user: parasol
+  # NOTE: in v1 the same default password is used across tenants. A per-tenant
+  # random password is provisioned by the Vault setup Job at
+  # kv/secrets/tenants/<username>/db-password but is not yet wired through
+  # to Postgres + app deployment (the consuming app manifests live in the
+  # per-tenant GitLab repo and require coordinated v2 changes).
   password: parasol
   name: parasol
   resources:

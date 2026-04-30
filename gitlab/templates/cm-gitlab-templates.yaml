@@ -115,3 +115,7 @@ data:
               git push {{ "{{" }} _git_template_repo_url {{ "}}" }}
 
 {{- end }}
+
+        # NOTE: Per-tenant clone-template-push of `parasol-insurance` source moved
+        # to cm-gitlab-tenant-reconcile.yaml — consumed by the Argo CD Sync hook
+        # job-gitlab-tenant-reconcile.yaml (idempotent re-runs on every sync).

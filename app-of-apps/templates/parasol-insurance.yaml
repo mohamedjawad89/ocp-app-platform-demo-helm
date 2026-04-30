@@ -1,27 +1,57 @@
+{{/*
+Multi-tenant fan-out: render one Argo CD Application per dev-user listed in
+.Values.tenants, each pointing at the parasol-insurance-tenant chart with
+helm.valuesObject populated for that tenant. See:
+  - specs/001-multi-tenant-demo/spec.md (Tenant Scope Reference)
+  - specs/001-multi-tenant-demo/contracts/app-of-apps.values.schema.md
+*/}}
+{{- $reserved := list "vault" "keycloak" "gitlab" "quay" "rhdh-gitops" "noobaa" "external-secrets" "default" "parasol" "parasol-insurance" "tenant" -}}
+{{- if not .Values.tenants -}}
+{{- fail "tenants must be a non-empty list of dev-user identifiers" -}}
+{{- end -}}
+{{- range $tenant := .Values.tenants }}
+{{- if not (regexMatch "^[a-z][a-z0-9]{1,15}$" $tenant) -}}
+{{- fail (printf "tenants entry %q must match ^[a-z][a-z0-9]{1,15}$ (lowercase, leading letter, 2-16 chars)" $tenant) -}}
+{{- end -}}
+{{- if has $tenant $reserved -}}
+{{- fail (printf "tenants entry %q is a reserved platform name" $tenant) -}}
+{{- end -}}
+{{- if or (hasPrefix "kube-" $tenant) (hasPrefix "openshift-" $tenant) -}}
+{{- fail (printf "tenants entry %q must not start with kube- or openshift-" $tenant) -}}
+{{- end }}
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
-{{ include "app-of-apps.metadata" (dict "name" .Values.parasolInsurance.name "namespace" .Values.argocd.namespace "syncWave" "3") }}
+{{ include "app-of-apps.metadata" (dict "name" (printf "%s-parasol-insurance-tenant" $tenant) "namespace" $.Values.argocd.namespace "syncWave" "3") }}
 spec:
   destination:
-    namespace: {{ .Values.parasolInsurance.namespace }}
+    namespace: {{ $.Values.argocd.namespace }}
     server: https://kubernetes.default.svc
   project: default
   source:
-    path: parasol-insurance
-    repoURL: {{ .Values.gitops.repoURL }}
-    targetRevision: {{ .Values.gitops.targetRevision }}
+    path: parasol-insurance-tenant
+    repoURL: {{ $.Values.gitops.repoURL }}
+    targetRevision: {{ $.Values.gitops.targetRevision }}
     helm:
       valuesObject:
+        tenant:
+          username: {{ $tenant }}
         gitlab:
-          rootPassword: {{ .Values.gitlab.rootPassword | quote }}
-          host: {{ .Values.gitlab.host }}
+          host: {{ $.Values.gitlab.host }}
+          group: tenant-{{ $tenant }}
         registry:
-          host: {{ .Values.quay.host }}
-          username: {{ .Values.quay.adminUser }}
-          password: {{ .Values.quay.adminUserPassword | quote }}
+          host: {{ $.Values.quay.host }}
+          org: tenant-{{ $tenant }}
         cluster:
-          subdomain: {{ .Values.cluster.subdomain }}
+          subdomain: {{ $.Values.cluster.subdomain }}
+        argocd:
+          namespace: {{ $.Values.argocd.namespace }}
+        gitops:
+          repoURL: {{ $.Values.gitops.repoURL }}
         vault:
-          name: {{ .Values.vault.name }}
-          namespace: {{ .Values.vault.namespace }}
-{{ include "app-of-apps.syncPolicy" . | indent 2 }}
+          name: {{ $.Values.vault.name }}
+          namespace: {{ $.Values.vault.namespace }}
+          tenantRole: tenant-{{ $tenant }}
+          tenantPathPrefix: kv/secrets/tenants/{{ $tenant }}
+{{ include "app-of-apps.syncPolicy" $ | indent 2 }}
+{{- end }}

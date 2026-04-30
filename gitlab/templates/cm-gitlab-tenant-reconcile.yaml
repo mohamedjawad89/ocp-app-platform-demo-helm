@@ -1,0 +1,321 @@
+kind: ConfigMap
+metadata:
+  name: cm-gitlab-tenant-reconcile
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+apiVersion: v1
+data:
+  playbook.yaml: |
+    ---
+    - name: Reconcile per-tenant GitLab assets
+      hosts: localhost
+      vars:
+        gitlab_namespace: {{ $.Release.Namespace }}
+        tenants: {{ $.Values.tenants | default list | toJson }}
+        platform_engineers: {{ $.Values.platformEngineers | default list | toJson }}
+      tasks:
+        - name: Wait for GitLab API to be available
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/projects
+            method: GET
+            validate_certs: false
+          register: r_liveness
+          retries: 60
+          delay: 10
+          until: r_liveness.status == 200
+
+        - name: Wait for root-user-personal-token Secret (created by one-shot init Job)
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: root-user-personal-token
+            namespace: '{{ "{{" }} gitlab_namespace {{ "}}" }}'
+          register: r_root_token
+          retries: 60
+          delay: 10
+          until:
+            - r_root_token.resources is defined
+            - r_root_token.resources | length > 0
+            - r_root_token.resources[0].data is defined
+            - r_root_token.resources[0].data.token is defined
+
+        - name: Decode root token
+          ansible.builtin.set_fact:
+            root_token: '{{ "{{" }} r_root_token.resources[0].data.token | b64decode {{ "}}" }}'
+
+        - name: Skip if no tenants and no platform engineers configured
+          ansible.builtin.debug:
+            msg: 'Nothing to reconcile.'
+          when: (tenants | length == 0) and (platform_engineers | length == 0)
+
+{{- $displayNames := .Values.gitlab.users.displayNames | default dict }}
+{{- range $tenant := .Values.tenants }}
+
+        - name: Create user {{ $tenant }} (tenant) — idempotent
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/users
+            method: POST
+            body_format: form-urlencoded
+            body:
+              admin: false
+              email: {{ $tenant }}@rhdemo.com
+              public_email: {{ $tenant }}@rhdemo.com
+              skip_confirmation: true
+              username: {{ $tenant }}
+              password: {{ include "gitlab-user.password" $ }}
+              name: {{ index $displayNames $tenant | default (printf "%s developer" $tenant) | quote }}
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 409
+          register: r_user_{{ $tenant }}
+          retries: 5
+          delay: 5
+          until: r_user_{{ $tenant }}.status in [201, 409]
+{{- end }}
+{{- range $pe := .Values.platformEngineers }}
+
+        - name: Create user {{ $pe }} (platform engineer) — idempotent
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/users
+            method: POST
+            body_format: form-urlencoded
+            body:
+              admin: false
+              email: {{ $pe }}@rhdemo.com
+              public_email: {{ $pe }}@rhdemo.com
+              skip_confirmation: true
+              username: {{ $pe }}
+              password: {{ include "gitlab-user.password" $ }}
+              name: {{ index $displayNames $pe | default (printf "%s platform engineer" $pe) | quote }}
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 409
+          register: r_user_{{ $pe }}
+          retries: 5
+          delay: 5
+          until: r_user_{{ $pe }}.status in [201, 409]
+{{- end }}
+
+        - name: List users (for Maintainer-add lookups)
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/users?per_page=100
+            method: GET
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code: 200
+          register: r_users
+
+{{- range $tenant := .Values.tenants }}
+
+        - name: Ensure tenant group tenant-{{ $tenant }} — idempotent
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/groups
+            method: POST
+            body_format: form-urlencoded
+            body:
+              name: tenant-{{ $tenant }}
+              path: tenant-{{ $tenant }}
+              visibility: public
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 400
+              - 409
+          register: r_tenant_group_{{ $tenant }}
+          retries: 5
+          delay: 5
+          until: r_tenant_group_{{ $tenant }}.status in [201, 400, 409]
+          failed_when:
+            - r_tenant_group_{{ $tenant }}.status == 400
+            - "'has already been taken' not in (r_tenant_group_{{ $tenant }}.json | default({}) | string)"
+
+        - name: Look up tenant group tenant-{{ $tenant }}
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/groups/tenant-{{ $tenant }}
+            method: GET
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code: 200
+          register: r_tenant_group_lookup_{{ $tenant }}
+
+        - name: Import parasol-insurance (source) into tenant-{{ $tenant }} — idempotent
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/projects
+            method: POST
+            body_format: form-urlencoded
+            body:
+              name: parasol-insurance
+              import_url: https://github.com/redhat-ads-tech/parasol-insurance.git
+              visibility: public
+              builds_access_level: enabled
+              auto_devops_enabled: false
+              namespace_id: '{{ "{{" }} r_tenant_group_lookup_{{ $tenant }}.json.id {{ "}}" }}'
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 400
+              - 409
+          register: r_tenant_src_import_{{ $tenant }}
+          retries: 5
+          delay: 5
+          until: r_tenant_src_import_{{ $tenant }}.status in [201, 400, 409]
+          failed_when:
+            - r_tenant_src_import_{{ $tenant }}.status == 400
+            - "'has already been taken' not in (r_tenant_src_import_{{ $tenant }}.json | default({}) | string)"
+
+        - name: Import parasol-insurance-secured-manifests (deploy) into tenant-{{ $tenant }} — idempotent
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/projects
+            method: POST
+            body_format: form-urlencoded
+            body:
+              name: parasol-insurance-secured-manifests
+              import_url: https://github.com/redhat-ads-tech/parasol-insurance-secured-manifests.git
+              visibility: public
+              builds_access_level: enabled
+              auto_devops_enabled: false
+              namespace_id: '{{ "{{" }} r_tenant_group_lookup_{{ $tenant }}.json.id {{ "}}" }}'
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 400
+              - 409
+          register: r_tenant_deploy_import_{{ $tenant }}
+          retries: 5
+          delay: 5
+          until: r_tenant_deploy_import_{{ $tenant }}.status in [201, 400, 409]
+          failed_when:
+            - r_tenant_deploy_import_{{ $tenant }}.status == 400
+            - "'has already been taken' not in (r_tenant_deploy_import_{{ $tenant }}.json | default({}) | string)"
+
+        - name: Add user {{ $tenant }} as Maintainer of tenant-{{ $tenant }} — idempotent
+          when: item.username == '{{ $tenant }}'
+          ansible.builtin.uri:
+            url: https://{{ $.Values.gitlab.host }}/api/v4/groups/{{ "{{" }} r_tenant_group_lookup_{{ $tenant }}.json.id {{ "}}" }}/members
+            method: POST
+            body_format: form-urlencoded
+            body:
+              user_id: '{{ "{{" }} item.id {{ "}}" }}'
+              access_level: 40
+            headers:
+              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
+            validate_certs: false
+            status_code:
+              - 201
+              - 409
+          register: r_tenant_member_{{ $tenant }}
+          retries: 5
+          delay: 5
+          until: r_tenant_member_{{ $tenant }}.status in [201, 409] or r_tenant_member_{{ $tenant }} is skipped
+          loop: '{{ "{{" }} r_users.json {{ "}}" }}'
+{{- end }}
+
+        # Per-tenant clone-template-push of parasol-insurance source devfile (Option A unification)
+        - name: Git config for templating step
+          ansible.builtin.command: '{{ "{{" }} item {{ "}}" }}'
+          loop:
+            - git config --global user.email "{{ $.Values.gitlab.email.address }}"
+            - git config --global user.name "{{ $.Values.gitlab.email.displayName }}"
+          ignore_errors: true
+
+{{- $tplCfg := .Values.gitlab.tenantSourceTemplates | default dict -}}
+{{- $tplBranch := $tplCfg.branch | default "main" -}}
+{{- $tplFiles := $tplCfg.templates | default (list "devfile.yaml") -}}
+{{- range $tenant := .Values.tenants }}
+
+        - name: Build per-tenant repo URL for tenant-{{ $tenant }}
+          ansible.builtin.set_fact:
+            _tenant_{{ $tenant }}_repo_url: https://root:{{ $.Values.gitlab.rootPassword }}@{{ $.Values.gitlab.host }}/tenant-{{ $tenant }}/parasol-insurance
+
+        - name: Reset older clone for tenant-{{ $tenant }}
+          ansible.builtin.shell: rm -rf /tmp/tenant-{{ $tenant }}-parasol-insurance
+
+        - name: Clone tenant-{{ $tenant }}/parasol-insurance
+          ansible.builtin.git:
+            accept_hostkey: true
+            force: true
+            repo: '{{ "{{" }} _tenant_{{ $tenant }}_repo_url {{ "}}" }}'
+            dest: "/tmp/tenant-{{ $tenant }}-parasol-insurance"
+            version: "{{ $tplBranch }}"
+          environment:
+            GIT_SSL_NO_VERIFY: "true"
+          register: r_tenant_src_clone_{{ $tenant }}
+          retries: 30
+          delay: 10
+          ignore_errors: true
+          until: r_tenant_src_clone_{{ $tenant }} is not failed
+{{- range $tplFile := $tplFiles }}
+
+        - name: Replace template variables in tenant-{{ $tenant }}/parasol-insurance/{{ $tplFile }}
+          ansible.builtin.replace:
+            path: /tmp/tenant-{{ $tenant }}-parasol-insurance/{{ $tplFile }}
+            regexp: '\{\{\s*{{ "{{" }} item.key {{ "}}" }}\s*\}\}'
+            replace: '{{ "{{" }} item.value {{ "}}" }}'
+          loop:
+            - key: gitlab_host
+              value: "{{ $.Values.gitlab.host }}"
+            - key: cluster_subdomain
+              value: "{{ $.Values.cluster.subdomain }}"
+            - key: rhdh_gitops_namespace
+              value: "{{ $.Values.gitops.namespace }}"
+            - key: rhdh_gitops_project
+              value: "{{ $.Values.gitops.project }}"
+            - key: quay_host
+              value: "{{ $.Values.quay.host }}"
+            - key: orchestrator_namespace
+              value: "{{ $.Values.orchestrator.namespace }}"
+            - key: chart_repo_url
+              value: "https://redhat-ads-tech.github.io/ocp-app-platform-demo-apps-helm"
+            - key: tenant_username
+              value: "{{ $tenant }}"
+            - key: tenant_group
+              value: "tenant-{{ $tenant }}"
+          ignore_errors: true
+{{- end }}
+
+        - name: Stage / commit / push tenant-{{ $tenant }} parasol-insurance changes (idempotent — empty commits/pushes are no-ops)
+          ansible.builtin.shell: |
+            cd /tmp/tenant-{{ $tenant }}-parasol-insurance && \
+            git add . && \
+            (git diff --cached --quiet || git commit -m 'gitlab init: per-tenant cluster value templating for tenant-{{ $tenant }}') && \
+            git push {{ "{{" }} _tenant_{{ $tenant }}_repo_url {{ "}}" }}
+          ignore_errors: true
+{{- end }}
+
+        - name: Wait for Vault Pod
+          kubernetes.core.k8s_info:
+            kind: Pod
+            name: {{ $.Values.vault.name }}-0
+            namespace: {{ $.Values.vault.namespace }}
+          register: r_vault
+          retries: 60
+          delay: 5
+          until:
+            - r_vault.resources is defined
+            - r_vault.resources | length > 0
+            - r_vault.resources[0].status.phase == 'Running'
+
+        - name: Write per-tenant gitlab-token entries to Vault (v1 — mirrors root PAT under tenant-scoped paths)
+          kubernetes.core.k8s_exec:
+            namespace: {{ $.Values.vault.namespace }}
+            pod: {{ $.Values.vault.name }}-0
+            command: '{{ "{{" }} item {{ "}}" }}'
+          loop:
+{{- range $tenant := .Values.tenants }}
+            - 'vault kv put kv/secrets/tenants/{{ $tenant }}/gitlab-token value={{ "{{" }} root_token {{ "}}" }}'
+{{- end }}
+          when: tenants | length > 0

@@ -1,0 +1,118 @@
+kind: ConfigMap
+metadata:
+  name: cm-vault-tenant-reconcile
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+apiVersion: v1
+data:
+  playbook.yaml: |
+    ---
+    - name: Reconcile per-tenant Vault assets
+      hosts: localhost
+      vars:
+        vault_namespace: {{ $.Release.Namespace }}
+        tenants: {{ $.Values.tenants | default list | toJson }}
+      tasks:
+        - name: Wait for Vault pod
+          kubernetes.core.k8s_info:
+            kind: Pod
+            name: vault-0
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+          register: r_vault
+          retries: 120
+          delay: 5
+          until:
+            - r_vault.resources is defined
+            - r_vault.resources | length > 0
+            - r_vault.resources[0].status is defined
+            - r_vault.resources[0].status.phase is defined
+            - r_vault.resources[0].status.phase == 'Running'
+
+        - name: Wait for vault-token Secret (created by one-shot setup Job)
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: vault-token
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+          register: r_vault_token_secret
+          retries: 60
+          delay: 10
+          until:
+            - r_vault_token_secret.resources is defined
+            - r_vault_token_secret.resources | length > 0
+            - r_vault_token_secret.resources[0].data is defined
+            - r_vault_token_secret.resources[0].data.token is defined
+
+        - name: Decode root token
+          ansible.builtin.set_fact:
+            vault_token: '{{ "{{" }} r_vault_token_secret.resources[0].data.token | b64decode {{ "}}" }}'
+
+        - name: Login to Vault inside the pod
+          kubernetes.core.k8s_exec:
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+            pod: vault-0
+            command: 'vault login {{ "{{" }} vault_token {{ "}}" }}'
+          retries: 5
+          delay: 5
+
+        - name: Skip if no tenants configured
+          ansible.builtin.debug:
+            msg: 'No tenants in tenants[]; nothing to reconcile.'
+          when: tenants | length == 0
+
+        - name: Write per-tenant Vault policies
+          ansible.builtin.shell: |
+            cat <<'EOF' > /tmp/tenant-{{ "{{" }} item {{ "}}" }}.hcl
+            path "kv/data/secrets/tenants/{{ "{{" }} item {{ "}}" }}/*" {
+              capabilities = ["read"]
+            }
+            path "kv/metadata/secrets/tenants/{{ "{{" }} item {{ "}}" }}/*" {
+              capabilities = ["read", "list"]
+            }
+            EOF
+            oc cp /tmp/tenant-{{ "{{" }} item {{ "}}" }}.hcl {{ "{{" }} vault_namespace {{ "}}" }}/vault-0:/tmp/tenant-{{ "{{" }} item {{ "}}" }}.hcl
+            oc exec vault-0 -n {{ "{{" }} vault_namespace {{ "}}" }} -- vault policy write tenant-{{ "{{" }} item {{ "}}" }} /tmp/tenant-{{ "{{" }} item {{ "}}" }}.hcl
+          loop: '{{ "{{" }} tenants {{ "}}" }}'
+          when: tenants | length > 0
+
+        - name: Write per-tenant Kubernetes auth roles
+          kubernetes.core.k8s_exec:
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+            pod: vault-0
+            command: >-
+              vault write auth/kubernetes/role/tenant-{{ "{{" }} item {{ "}}" }}
+              bound_service_account_names=tenant-vault-reader
+              bound_service_account_namespaces={{ "{{" }} item {{ "}}" }}-parasol-insurance-build,{{ "{{" }} item {{ "}}" }}-parasol-insurance-dev,{{ "{{" }} item {{ "}}" }}-parasol-insurance-prod
+              token_policies=tenant-{{ "{{" }} item {{ "}}" }}
+              ttl=1h
+          loop: '{{ "{{" }} tenants {{ "}}" }}'
+          when: tenants | length > 0
+
+        - name: Check per-tenant db-password exists
+          kubernetes.core.k8s_exec:
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+            pod: vault-0
+            command: 'vault kv get -field=value kv/secrets/tenants/{{ "{{" }} item {{ "}}" }}/db-password'
+          loop: '{{ "{{" }} tenants {{ "}}" }}'
+          register: r_tenant_db_pw_check
+          failed_when: false
+          when: tenants | length > 0
+
+        - name: Seed initial per-tenant db-password where missing
+          kubernetes.core.k8s_exec:
+            namespace: '{{ "{{" }} vault_namespace {{ "}}" }}'
+            pod: vault-0
+            command: >-
+              vault kv put kv/secrets/tenants/{{ "{{" }} item.item {{ "}}" }}/db-password
+              value={{ "{{" }} lookup('password', '/dev/null chars=ascii_letters,digits length=24') {{ "}}" }}
+          loop: '{{ "{{" }} r_tenant_db_pw_check.results | default([]) {{ "}}" }}'
+          loop_control:
+            label: '{{ "{{" }} item.item | default("") {{ "}}" }}'
+          when:
+            - tenants | length > 0
+            - item.rc is defined
+            - item.rc != 0
+
+        - name: Per-tenant Vault reconcile complete
+          ansible.builtin.debug:
+            msg: '[multi-tenant] Vault reconcile complete for tenants: {{ "{{" }} tenants | join(", ") {{ "}}" }}. Orphaned tenant policies/roles for removed tenants are NOT auto-deleted; see specs/001-multi-tenant-demo/quickstart.md §4.'

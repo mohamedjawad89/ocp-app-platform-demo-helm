@@ -22,19 +22,17 @@ gitlab:
     db: "0123456789"
     otp: "0123456789"
     secret: "0123456789"
+  # User accounts are derived from `tenants[]` and `platformEngineers[]` (passed
+  # from app-of-apps). Optional friendly-name overrides go here; entries not
+  # listed default to "<id> developer" / "<id> platform engineer".
   users:
-    users:
-      - id: dev1
-        name: Dave Developer
-      - id: dev2
-        name: Divya Developer
-      - id: dev3
-        name: Do Developer
-      - id: pe1
-        name: Paul PlatEngineer
-      - id: pe2
-        name: Priya PlatEngineer
-    password: 
+    password:
+    displayNames: {}
+      # Example:
+      # dev1: Dave Developer
+      # pe1: Paul PlatEngineer
+  # Tenant groups (`tenant-<id>`) are generated per-tenant by the init playbook
+  # from `tenants[]`. Only platform-shared groups belong here.
   groups:
     - name: rhdh
       repo:
@@ -61,33 +59,11 @@ gitlab:
             - name: approved
               color: green
             - name: denied
-              color: red        
-    - name: devteam1
-      repo: []
-      users:
-        - id: dev1
-        - id: dev2
-        - id: dev3
-    - name: parasol
-      repo:
-        - name: parasol-insurance
-          url: https://github.com/redhat-ads-tech/parasol-insurance.git
-        - name: parasol-insurance-manifests
-          url: https://github.com/redhat-ads-tech/parasol-insurance-manifests.git
-        - name: parasol-insurance-secured-manifests
-          url: https://github.com/redhat-ads-tech/parasol-insurance-secured-manifests.git
-      users:
-        - id: dev1
-        - id: dev2
-        - id: dev3
-        - id: pe1
-        - id: pe2
+              color: red
+  # Per-tenant clone-template-push of `parasol-insurance` is handled separately
+  # in cm-gitlab-templates.yaml by iterating tenants[]. The list below is for
+  # platform-shared template targets only (rhdh-templates).
   templates:
-    - group: parasol
-      project: parasol-insurance
-      branch: main
-      templates:
-        - devfile.yaml
     - group: rhdh
       project: rhdh-templates
       branch: main
@@ -96,6 +72,12 @@ gitlab:
         - templates/request-kafka-topic/template.yaml
         - templates/request-kafka-user/template.yaml
         - templates/quarkus-rest-api/template.yaml
+  # Per-tenant `parasol-insurance` source-repo template-target. Cloned per tenant
+  # from `tenant-<id>/parasol-insurance` and pushed back after templating.
+  tenantSourceTemplates:
+    branch: main
+    templates:
+      - devfile.yaml
 postgresql:
   dbUser: gitlab
   dbPassword: passw0rd

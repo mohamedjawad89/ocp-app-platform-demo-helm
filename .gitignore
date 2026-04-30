@@ -1,4 +1,7 @@
 .DS_Store
 .claude
+.specify
+specs
+CLAUDE.md
 **/charts/*.tgz
 **/Chart.lock

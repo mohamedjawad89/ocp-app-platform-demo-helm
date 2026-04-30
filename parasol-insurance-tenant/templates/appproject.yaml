@@ -1,0 +1,26 @@
+{{- include "tenant.validate" . }}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ include "tenant.appProjectName" . }}
+  namespace: {{ .Values.argocd.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Tenant project for {{ .Values.tenant.username }} — restricts source repos to the tenant GitLab group and destinations to the tenant namespaces.
+  sourceRepos:
+    - https://{{ .Values.gitlab.host }}/{{ include "tenant.gitlabGroup" . }}/*
+    - {{ .Values.gitops.repoURL | default "https://github.com/mohamedjawad89/ocp-app-platform-demo-helm.git" }}
+  destinations:
+    - namespace: {{ include "parasol-insurance-tenant.prefix" . }}-build
+      server: https://kubernetes.default.svc
+    - namespace: {{ include "parasol-insurance-tenant.prefix" . }}-dev
+      server: https://kubernetes.default.svc
+    - namespace: {{ include "parasol-insurance-tenant.prefix" . }}-prod
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

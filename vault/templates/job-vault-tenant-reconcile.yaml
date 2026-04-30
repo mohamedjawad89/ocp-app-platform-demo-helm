@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-tenant-reconcile
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      serviceAccountName: vault-setup
+      containers:
+        - name: vault-tenant-reconcile
+          image: quay.io/agnosticd/ee-multicloud:latest
+          command:
+            - /bin/bash
+            - '-c'
+            - |
+              set -x
+              ansible-playbook -i localhost /scripts/playbook.yaml
+          volumeMounts:
+            - mountPath: /scripts
+              name: scripts
+      restartPolicy: Never
+      volumes:
+        - name: scripts
+          configMap:
+            name: cm-vault-tenant-reconcile

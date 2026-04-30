@@ -1,3 +1,4 @@
+{{- include "tenant.validate" . }}
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
@@ -7,12 +8,12 @@ metadata:
 spec:
   refreshInterval: 5m
   secretStoreRef:
-    kind: ClusterSecretStore
-    name: vault
+    kind: SecretStore
+    name: tenant-vault
   data:
     - secretKey: token
       remoteRef:
-        key: secrets/gitlab/token
+        key: secrets/tenants/{{ .Values.tenant.username }}/gitlab-token
         property: value
   target:
     name: gitlab-token

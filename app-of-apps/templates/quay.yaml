@@ -16,6 +16,7 @@ spec:
           subscription:
             source: {{ include "app-of-apps.operatorSource" . }}
         quay-registry:
+          tenants: {{ .Values.tenants | toJson }}
           quay:
             host: {{ .Values.quay.host }}
             adminUser: {{ .Values.quay.adminUser }}

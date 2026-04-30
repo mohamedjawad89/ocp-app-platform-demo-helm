@@ -30,7 +30,7 @@ data:
           kubernetes.core.k8s_exec:
             namespace: {{ $.Values.vault.namespace }}
             pod: {{ $.Values.vault.name }}-0
-            command: 'vault kv get -field=value kv/secrets/{{ include "parasol-insurance-tenant.prefix" . }}/webhook-secret'
+            command: 'vault kv get -field=value {{ include "tenant.vaultPathPrefix" . }}/webhook-secret'
           register: r_existing_secret
           failed_when: false
 
@@ -48,7 +48,7 @@ data:
           kubernetes.core.k8s_exec:
             namespace: {{ $.Values.vault.namespace }}
             pod: {{ $.Values.vault.name }}-0
-            command: 'vault kv put kv/secrets/{{ include "parasol-insurance-tenant.prefix" . }}/webhook-secret value={{ "{{" }} _webhook_secret {{ "}}" }}'
+            command: 'vault kv put {{ include "tenant.vaultPathPrefix" . }}/webhook-secret value={{ "{{" }} _webhook_secret {{ "}}" }}'
           when: r_existing_secret.rc != 0
 
         - name: Wait for EventListener route
@@ -66,9 +66,9 @@ data:
           ansible.builtin.set_fact:
             _el_url: "https://{{ "{{" }} r_el_route.resources[0].spec.host {{ "}}" }}"
 
-        - name: Get parasol-insurance project ID
+        - name: Get tenant project ID (parasol-insurance source repo — webhook target)
           ansible.builtin.uri:
-            url: "https://{{ $.Values.gitlab.host }}/api/v4/projects/{{ "{{" }} tenant_username {{ "}}" }}%2Fparasol-insurance"
+            url: "https://{{ $.Values.gitlab.host }}/api/v4/projects/{{ include "tenant.gitlabGroup" . }}%2Fparasol-insurance"
             method: GET
             headers:
               PRIVATE-TOKEN: "{{ "{{" }} lookup('env', 'GITLAB_TOKEN') {{ "}}" }}"

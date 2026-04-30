@@ -1,9 +1,30 @@
 gitops:
-  repoURL: https://github.com/redhat-ads-tech/ocp-app-platform-demo-helm.git
+  repoURL: https://github.com/mohamedjawad89/ocp-app-platform-demo-helm.git
   targetRevision: main
 
 argocd:
   namespace: openshift-gitops
+
+# Multi-tenant feature: list of dev-user identifiers that receive an isolated
+# tenant. Each entry MUST satisfy ^[a-z][a-z0-9]{1,15}$ and MUST NOT collide
+# with platform-reserved names (vault, keycloak, gitlab, quay, rhdh-gitops,
+# noobaa, external-secrets, default, parasol, parasol-insurance, tenant, or
+# any name starting with kube-/openshift-). See specs/001-multi-tenant-demo/spec.md.
+tenants:
+  - dev1
+  - dev2
+  - dev3
+
+# Platform engineer identities — get cluster-admin and GitLab user accounts,
+# but do NOT receive isolated tenants. Operator-managed alongside tenants[].
+platformEngineers:
+  - pe1
+  - pe2
+
+# Forward-compatible per-tenant defaults. Currently empty; reserved for
+# operator overrides (image, db sizing, etc.) that apply to every tenant
+# unless individually overridden.
+tenantDefaults: {}
 
 # Operator version pinning via custom CatalogSource.
 # When enabled, a snapshot of the Red Hat operator catalog is deployed

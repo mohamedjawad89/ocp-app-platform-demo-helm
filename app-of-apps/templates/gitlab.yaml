@@ -11,6 +11,9 @@ spec:
     repoURL: {{ .Values.gitops.repoURL }}
     targetRevision: {{ .Values.gitops.targetRevision }}
     helm:
+      valuesObject:
+        tenants: {{ .Values.tenants | toJson }}
+        platformEngineers: {{ .Values.platformEngineers | toJson }}
       parameters:
         - name: gitlab.smtp.host
           value: {{ .Values.gitlab.smtp.host | quote }}

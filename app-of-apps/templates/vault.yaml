@@ -18,6 +18,7 @@ spec:
     helm:
       valuesObject:
         nameOverride: {{ .Values.vault.name }}
+        tenants: {{ .Values.tenants | toJson }}
         kubernetes:
           apiserver: {{ .Values.cluster.apiServer }}
         vault:

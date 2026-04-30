@@ -10,4 +10,11 @@ spec:
     path: parasol-rbac
     repoURL: {{ .Values.gitops.repoURL }}
     targetRevision: {{ .Values.gitops.targetRevision }}
+    helm:
+      valuesObject:
+        tenants: {{ .Values.tenants | toJson }}
+        clusterAdmins:
+          - pe1
+          - pe2
+        clusterRole: admin
 {{ include "app-of-apps.syncPolicy" . | indent 2 }}

@@ -1,11 +1,11 @@
-{{- range $ns := .Values.namespaces }}
-{{- range $user := $.Values.users }}
+{{- range $tenant := .Values.tenants }}
+{{- range $env := list "build" "dev" "prod" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ $user }}-admin
-  namespace: {{ $ns }}
+  name: {{ $tenant }}-tenant-admin
+  namespace: {{ $tenant }}-parasol-insurance-{{ $env }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -13,6 +13,6 @@ roleRef:
 subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: User
-    name: {{ $user }}
+    name: {{ $tenant }}
 {{- end }}
 {{- end }}

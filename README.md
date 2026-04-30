@@ -20,7 +20,7 @@ The workshop stands up the following on a single OpenShift cluster:
 | **OpenShift OAuth** | `openshift-oauth/` | Adds Keycloak as an OpenID identity provider on the cluster OAuth CR |
 | **Quay** | `quay/` | Container image registry |
 | **RHDH GitOps** | `gitops/` | Dedicated Argo CD instance for Developer Hub-managed applications |
-| **Red Hat Developer Hub** | `redhat-developer-hub/` | Internal developer portal (Backstage) |
+| **Red Hat Developer Hub** | `developer-hub/` | Internal developer portal (Backstage) |
 | **Trusted Artifact Signer** | `rhtas/` | Sigstore-based container image signing (Fulcio, Rekor, etc.) |
 
 ## App-of-apps pattern
@@ -68,19 +68,44 @@ Vault is the single source of truth for secrets. The flow works like this:
 
 ## Developer authentication
 
-Workshop users (dev1, dev2, pe1, pe2) authenticate via Keycloak. The `openshift-oauth/` chart adds a **"developers"** OpenID Connect identity provider to the cluster OAuth CR alongside the default htpasswd provider. Users see both options on the OpenShift login page.
+Workshop users (dev1, dev2, dev3, pe1, pe2) authenticate via Keycloak. The `openshift-oauth/` chart adds a **"developers"** OpenID Connect identity provider to the cluster OAuth CR alongside the default htpasswd provider. Users see both options on the OpenShift login page.
 
 DevSpaces reuses this flow — the DevSpaces operator hardcodes `provider="openshift"` in its gateway proxy config, so it always authenticates through OpenShift OAuth, which in turn redirects to Keycloak.
+
+## Multi-tenant model
+
+Each dev-user listed in `app-of-apps/values.yaml` → `tenants[]` (default `[dev1, dev2, dev3]`) receives a fully isolated tenant. Cluster-wide platform services stay shared (one instance per cluster); tenant runtime resources are per-tenant.
+
+| Component | Shared (one per cluster) | Per-tenant |
+|---|---|---|
+| Identity (Keycloak), source control instance (GitLab), image registry instance (Quay), secrets backend (Vault), developer portal (RHDH), signing/attestation (RHTAS), External Secrets Operator, OpenShift Pipelines operator, Argo CD instance | yes | — |
+| GitLab grouping | — | per-tenant **`tenant-<user>` group** containing `parasol-insurance-secured-manifests` repo |
+| Image registry scope | — | per-tenant **`tenant-<user>` Quay organization** with `pipeline` robot |
+| Secrets path tree | — | per-tenant **`kv/secrets/tenants/<user>/...`** (Vault) with per-tenant policy + Kubernetes auth role |
+| Developer-portal catalog filter | — | (display layer; defer — see Known limitations) |
+| Application GitOps controller | yes (instance) | per-tenant **`AppProject` `tenant-<user>`** restricting source repos and destinations |
+| Application namespaces | — | `<user>-parasol-insurance-{build,dev,prod}` |
+| Application database (Postgres) | — | per-tenant Postgres deployment + PVC (in dev and prod namespaces) |
+| Tekton pipelines / EventListener / webhook | — | per-tenant, in `<user>-parasol-insurance-build` |
+| RBAC | — | dev-user is `admin` in their three tenant namespaces only; `pe1`/`pe2` keep cluster-admin |
+
+To add a new dev-user: edit `tenants[]`, redeploy. To remove: remove from `tenants[]`, redeploy (in-cluster resources cascade-delete; external assets leave orphans — see Known limitations). Operator workflow and verification commands: [`specs/001-multi-tenant-demo/quickstart.md`](specs/001-multi-tenant-demo/quickstart.md).
+
+## Known limitations
+
+- **External-system orphans on tenant removal**: Argo CD cascades the in-cluster delete (namespaces, Postgres, AppProject, ExternalSecrets, Tekton resources), but the per-tenant GitLab group, Quay organization, and Vault path tree are NOT auto-deleted. Operator-cleanup commands are documented in [`specs/001-multi-tenant-demo/quickstart.md` §4](specs/001-multi-tenant-demo/quickstart.md). The setup Jobs print warning lines listing potentially-orphaned external assets.
+- **Per-tenant DB password is provisioned but not consumed**: `kv/secrets/tenants/<user>/db-password` holds a randomly-generated per-tenant Postgres password, but the Postgres pod and the consuming `parasol-insurance` app currently still use the static `database.password` from `parasol-insurance-tenant/values.yaml`. Wiring the Vault-sourced password through requires coordinated changes to the per-tenant `parasol-insurance-secured-manifests` repo (out-of-scope for the chart-side iteration). Reserved for v2 follow-up.
+- **Per-tenant `gitlab-token` mirrors the root PAT**: in v1, every tenant's `kv/secrets/tenants/<user>/gitlab-token` stores the GitLab root PAT. Path discipline (FR-016) is satisfied; per-tenant impersonation tokens are reserved for v2 follow-up.
+- **Backstage developer-portal catalog filter**: not implemented in this iteration. The previous `redhat-developer-hub-config-template` chart that templated the Backstage `app-config` was removed in commit `fddfc74`; the current `developer-hub/` chart only deploys the operator + prereqs and does not template `app-config`. Cluster RBAC (FR-002 in the spec) remains the security boundary; cross-tenant cluster operations are denied. Adding the catalog filter would require either templating a Backstage `app-config` ConfigMap consumed by the operator's `Backstage` CR, or editing the external Backstage config repo.
 
 ## Embedded Ansible playbooks
 
 Several charts use a pattern where a `ConfigMap` contains an Ansible playbook, and a `Job` runs it using an Ansible execution environment image. This handles multi-step imperative setup that can't be expressed declaratively:
 
-- **`vault/templates/cm-vault-setup.yaml`** — Initialises Vault: retrieves the root token, creates policies, enables Kubernetes auth, enables the KV engine, and pre-populates secrets
-- **`gitlab/templates/cm-gitlab-init.yaml`** — Waits for GitLab to be ready, creates a root PAT, configures application settings, creates users/groups/repos, imports repositories, and writes the PAT + webhook secret to Vault
-- **`quay/quay-registry/templates/cm-config.yaml`** — Waits for the Quay registry to be ready, creates the admin user, extends the API token expiration, and writes registry credentials to Vault
-- **`redhat-developer-hub/redhat-developer-hub-prereqs/templates/cm-sa-token-writer.yaml`** — Creates a `kubernetes.io/service-account-token` Secret, waits for the token to be populated, and writes it to Vault so RHDH can use it for cluster access
-- **`redhat-developer-hub/redhat-developer-hub-config-template/templates/rhdh-config-template.yaml`** — Clones the Developer Hub config repo from GitLab, templates it with cluster-specific values, and pushes the result back
+- **`vault/templates/cm-vault-setup.yaml`** — Initialises Vault: retrieves the root token, creates policies, enables Kubernetes auth, enables the KV engine, pre-populates platform-shared secrets, and **provisions per-tenant Vault policies + Kubernetes auth roles + initial `db-password`** under `kv/secrets/tenants/<user>/...`
+- **`gitlab/templates/cm-gitlab-init.yaml`** — Waits for GitLab to be ready, creates a root PAT, configures application settings, creates users/groups/repos, imports repositories, **provisions per-tenant `tenant-<user>` groups + imports `parasol-insurance-secured-manifests` into them + makes the tenant user a Maintainer**, and writes the PAT + per-tenant `gitlab-token` entries to Vault
+- **`quay/quay-registry/templates/cm-config.yaml`** — Waits for the Quay registry to be ready, creates the admin user, extends the API token expiration, **provisions per-tenant `tenant-<user>` Quay organizations + `pipeline` robot accounts**, and writes registry credentials (shared admin + per-tenant) to Vault
+- **`developer-hub/developer-hub-prereqs/templates/cm-sa-token-writer.yaml`** — Creates a `kubernetes.io/service-account-token` Secret, waits for the token to be populated, and writes it to Vault so RHDH can use it for cluster access
 
 These Jobs use the `quay.io/agnosticd/ee-multicloud` execution environment image (or `ose-cli` for simpler scripts) and follow Helm/Argo CD sync-wave ordering to ensure dependencies are ready.
 

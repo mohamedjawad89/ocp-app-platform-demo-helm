@@ -133,3 +133,7 @@ data:
 {{- if $.Values.secrets.tpa.cliClientSecret }}
             - 'vault kv put kv/secrets/tpa/cli-client-secret value={{ $.Values.secrets.tpa.cliClientSecret }}'
 {{- end }}
+        # NOTE: Per-tenant Vault policies, Kubernetes auth roles, and db-password
+        # seeding live in cm-vault-tenant-reconcile.yaml — that ConfigMap is
+        # consumed by job-vault-tenant-reconcile.yaml, which runs as an Argo CD
+        # Sync hook on every sync (idempotent re-runs).

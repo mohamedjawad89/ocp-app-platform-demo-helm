@@ -194,3 +194,7 @@ data:
             status_code:
               - 200
 {{- end }}
+
+        # NOTE: Per-tenant Quay provisioning (orgs, robots, Vault writes) moved to
+        # cm-quay-tenant-reconcile.yaml — consumed by the Argo CD Sync hook
+        # job-quay-tenant-reconcile.yaml (idempotent re-runs on every sync).

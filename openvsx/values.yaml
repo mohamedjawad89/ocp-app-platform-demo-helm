@@ -34,7 +34,7 @@ server:
 build:
   git:
     # Overridden by app-of-apps to match gitops.repoURL and targetRevision
-    uri: "https://github.com/redhat-ads-tech/ocp-app-platform-demo-helm.git"
+    uri: "https://github.com/mohamedjawad89/ocp-app-platform-demo-helm.git"
     ref: "dev"
     contextDir: openvsx/open-vsx-server
 

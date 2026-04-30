@@ -1,4 +1,7 @@
+{{- include "tenant.validate" . }}
 {{- $prefix := include "parasol-insurance-tenant.prefix" . -}}
+{{- $project := include "tenant.appProjectName" . -}}
+{{- $group := include "tenant.gitlabGroup" . -}}
 {{- range $env := list "dev" "prod" }}
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -7,17 +10,17 @@ metadata:
   name: {{ $prefix }}-{{ $env }}
   namespace: {{ $.Values.argocd.namespace }}
   annotations:
-    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-wave: "1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     namespace: {{ $prefix }}-{{ $env }}
     server: https://kubernetes.default.svc
-  project: {{ $.Values.tenant.username }}
+  project: {{ $project }}
   source:
     path: app
-    repoURL: https://{{ $.Values.gitlab.host }}/{{ $.Values.tenant.username }}/parasol-insurance-secured-manifests.git
+    repoURL: https://{{ $.Values.gitlab.host }}/{{ $group }}/parasol-insurance-secured-manifests.git
     targetRevision: main
     helm:
       valueFiles:

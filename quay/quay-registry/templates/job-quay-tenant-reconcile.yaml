@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "quay-registry.name" . }}-tenant-reconcile
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      serviceAccount: {{ include "quay-registry.name" . }}-config
+      containers:
+        - name: quay-tenant-reconcile
+          image: quay.io/agnosticd/ee-multicloud:latest
+          command:
+            - /bin/bash
+            - '-c'
+            - |
+              set -x
+              ansible-playbook -i localhost /scripts/playbook.yaml
+          volumeMounts:
+            - mountPath: /scripts
+              name: scripts
+      restartPolicy: Never
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "quay-registry.name" . }}-tenant-reconcile

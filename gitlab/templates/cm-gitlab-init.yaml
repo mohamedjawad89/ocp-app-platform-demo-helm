@@ -85,32 +85,12 @@ data:
           register: r_application_settings
           until: r_application_settings.status == 200
 
-{{- range $item := .Values.gitlab.users.users }}
-
-        - name: Create user {{ $item.id }}
-          ansible.builtin.uri:
-            url: https://{{ $.Values.gitlab.host }}/api/v4/users
-            method: POST
-            body_format: form-urlencoded
-            body:
-              admin: false
-              email: {{ $item.id }}@rhdemo.com
-              public_email: {{ $item.id }}@rhdemo.com
-              skip_confirmation: true
-              username: {{ $item.id }}
-              password: {{ include "gitlab-user.password" $ }}
-              name: {{ $item.name | default (printf "%s GitLab" $item.id) }}
-            headers:
-              PRIVATE-TOKEN: '{{ "{{" }} root_token {{ "}}" }}'
-            validate_certs: false
-            status_code:
-              - 201
-              - 409
-          register: r_user
-          retries: 10
-          delay: 5
-          until: r_user.status in [201, 409]
-{{- end }}
+        # NOTE: Per-tenant and per-platform-engineer user creation lives in
+        # cm-gitlab-tenant-reconcile.yaml (consumed by the Argo CD Sync hook
+        # job-gitlab-tenant-reconcile.yaml). User accounts referenced below
+        # may not yet exist on the very first sync, but the lookup task
+        # tolerates that — reconcile will create them and fix it on the
+        # subsequent sync.
 
         - name: List users
           ansible.builtin.uri:
@@ -330,7 +310,12 @@ data:
             - r_vault.resources[0].status.phase is defined
             - r_vault.resources[0].status.phase == 'Running'
 
-        - name: Create vault secrets for Gitlab
+        # NOTE: Per-tenant GitLab provisioning (groups, repo imports, Maintainer
+        # add) and per-tenant gitlab-token Vault writes moved to
+        # cm-gitlab-tenant-reconcile.yaml — consumed by the Argo CD Sync hook
+        # job-gitlab-tenant-reconcile.yaml (idempotent re-runs on every sync).
+
+        - name: Create vault secrets for Gitlab (shared platform paths)
           kubernetes.core.k8s_exec:
             namespace: {{ .Values.vault.namespace }}
             pod: {{ .Values.vault.namespace }}-0
