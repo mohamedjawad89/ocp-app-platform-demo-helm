@@ -1,0 +1,15 @@
+{{- include "tenant.validate" . }}
+{{- $prefix := include "parasol-insurance-tenant.prefix" . -}}
+{{- $tenant := .Values.tenant.username -}}
+{{- range $env := list "build" "dev" "prod" }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $prefix }}-{{ $env }}
+  labels:
+    tenant: {{ $tenant }}
+    parasol-insurance-tenant.environment: {{ $env }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+{{- end }}
